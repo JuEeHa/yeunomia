@@ -48,7 +48,7 @@ def handle_command(command, channel, *, response_prefix, irc):
 				irc.bot_response_bytes(channel, response_prefix + response)
 
 	else:
-		irc.bot_response(channel, response_prefix + 'Commands: nicks'.encode('utf-8'))
+		irc.bot_response_bytes(channel, response_prefix + 'Commands: nicks'.encode('utf-8'))
 
 # handle_message(*, prefix, message, nick, channel, irc)
 # Called for PRIVMSGs.
@@ -151,3 +151,12 @@ def handle_nonmessage(*, prefix, command, arguments, irc):
 			for channel in nicks_dict:
 				if nick in nicks_dict[channel]:
 					nicks_dict[channel].remove(nick)
+
+	elif command == b'KICK':
+		channel, nick, _ = arguments
+
+		nick = bytes(nick) #Ensure nick is hashable
+		channel = bytes(channel) # Ensure channel is hashable
+
+		with nicks_dict_lock:
+			nicks_dict[channel].remove(nick)
