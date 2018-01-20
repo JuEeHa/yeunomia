@@ -20,6 +20,13 @@ def on_connect(*, irc):
 	with nicks_dict_lock:
 		nicks_dict = {}
 
+# on_quit(*, irc)
+# Called just before IRC bot sends QUIT
+# Blocks the bot until it's done, including PING/PONG handling
+# irc is the IRC API object
+def on_quit(*, irc):
+	pass
+
 def handle_command(command, channel, *, response_prefix, irc):
 	global nicks_dict, nicks_dict_lock
 
@@ -49,13 +56,6 @@ def handle_command(command, channel, *, response_prefix, irc):
 
 	else:
 		irc.bot_response_bytes(channel, response_prefix + 'Commands: nicks'.encode('utf-8'))
-
-# on_quit(*, irc)
-# Called just before IRC bot sends QUIT
-# Blocks the bot until it's done, including PING/PONG handling
-# irc is the IRC API object
-def on_quit(*, irc):
-	...
 
 # handle_message(*, prefix, message, nick, channel, irc)
 # Called for PRIVMSGs.
