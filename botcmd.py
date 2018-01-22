@@ -1,6 +1,22 @@
 import threading
 
-# {b'#channel': {b'nick1', b'nick2', …}, …}
+class Nick:
+	def __init__(self, *, nick, channels = None, user = None):
+		if channels is None: channels = set()
+
+		self.nick = nick
+		self.channels = channels
+		self.user = user
+
+	def __repr__(self):
+		if self.__module__ == '__main__':
+			name = 'Nick'
+		else:
+			name = self.__module__ + '.Nick'
+
+		return '%s(nick = %s, channels = %s, user = %s)' % (name, self.nick, self.channels, self.user)
+
+# {b'nick1': Nick(...), ...}
 nicks_dict = {}
 nicks_dict_lock = threading.Lock()
 
@@ -30,29 +46,16 @@ def on_quit(*, irc):
 def handle_command(command, channel, *, response_prefix, irc):
 	global nicks_dict, nicks_dict_lock
 
-	channel = bytes(channel) #Ensure channel is hashable
-
 	# Split the commands into the command itself and the argument. Remove additional whitespace around them
 	command, _, argument = (i.strip() for i in command.partition(' '))
 
 	if command == 'nicks':
 		with nicks_dict_lock:
-			response = bytearray()
+			print('key', 'nick', 'user', 'channels', sep = '\t')
 
-			for nick in nicks_dict[channel]:
-				nick_utf8 = nick.decode('utf-8')
-				nick_zwsp = nick_utf8[0] + '\u200b' + nick_utf8[1:]
-				nick = nick_zwsp.encode('utf-8')
-
-				response.extend(nick + b' ')
-
-				# Send every 300 bytes
-				if len(response) >= 300:
-					irc.bot_response_bytes(channel, response_prefix + response)
-					response = bytearray()
-
-			if len(response) > 0:
-				irc.bot_response_bytes(channel, response_prefix + response)
+			for nick in nicks_dict:
+				nick_object = nicks_dict[nick]
+				print(nick, nick_object.nick, nick_object.user, nick_object.channels, sep = '\t')
 
 	else:
 		irc.bot_response_bytes(channel, response_prefix + 'Commands: nicks'.encode('utf-8'))
@@ -83,6 +86,61 @@ def handle_message(*, prefix, message, nick, channel, irc):
 
 		response = handle_command(command, channel, response_prefix = response_prefix, irc = irc)
 
+def add_nick_to_channel(nick, channel, *, already_on_channel_acceptable = False):
+	global nicks_dict_lock, nicks_dict
+
+	nick = bytes(nick) #Ensure nick is hashable
+	channel = bytes(channel) #Ensure channel is hashable
+
+	with nicks_dict_lock:
+		if nick not in nicks_dict:
+			nicks_dict[nick] = Nick(nick = nick)
+
+		assert already_on_channel_acceptable or channel not in nicks_dict[nick].channels
+
+		nicks_dict[nick].channels.add(channel)
+
+def remove_nick_from_channel(nick, channel):
+	global nicks_dict_lock, nicks_dict
+
+	nick = bytes(nick) #Ensure nick is hashable
+	channel = bytes(channel) #Ensure channel is hashable
+
+	with nicks_dict_lock:
+		nicks_dict[nick].channels.remove(channel)
+
+		# If we can no longer track the nick, null the user field
+		# This is because next time we see this nick, it might be a different person
+		if len(nicks_dict[nick].channels) == 0:
+			nicks_dict[nick].user = None
+
+def rename_nick(old_nick, new_nick):
+	global nicks_dict_lock, nicks_dict
+
+	old_nick = bytes(old_nick) #Ensure old_nick is hashable
+	new_nick = bytes(new_nick) #Ensure new_nick is hashable
+
+	with nicks_dict_lock:
+		assert nicks_dict[old_nick].nick == old_nick
+		assert new_nick not in nicks_dict
+
+		nick_object = nicks_dict.pop(old_nick)
+		nick_object.nick = new_nick
+		nicks_dict[new_nick] = nick_object
+
+		assert old_nick not in nicks_dict
+
+def quit_nick(nick):
+	global nicks_dict_lock, nicks_dict
+
+	nick = bytes(nick) #Ensure nick is hashable
+
+	with nicks_dict_lock:
+		# Clear channes
+		nicks_dict[nick].channels = set()
+
+		# Null user field, because the next time we see this nick, it might be a different person
+		nicks_dict[nick].user = None
 
 # handle_nonmessage(*, prefix, command, arguments, irc)
 # Called for all other commands than PINGs and PRIVMSGs.
@@ -94,76 +152,44 @@ def handle_message(*, prefix, message, nick, channel, irc):
 def handle_nonmessage(*, prefix, command, arguments, irc):
 	global nicks_dict_lock, nicks_dict
 
+	# FIXME: If we leave a channel, remove information pertaining to it from nicks database
+
 	if command == b'353': # Nick listing
 		_, _, channel, channel_nicks = arguments
 
-		channel = bytes(channel) # Ensure channel is hashable
+		own_nick = irc.get_nick()
 
-		with nicks_dict_lock:
-			if channel not in nicks_dict:
-				nicks_dict[channel] = set()
+		for nick in channel_nicks.split(b' '):
+			# Remove signifiers of opness / voicedness
+			if nick[0:1] in (b'@', b'+'):
+				nick = nick[1:]
 
-			for nick in channel_nicks.split(b' '):
-				nick = bytes(nick) #Ensure nick is hashable
-
-				# Remove prefixes from nicks
-				if nick[0:1] == b'@' or nick[0:1] == b'+':
-					nick = nick[1:]
-
-				nicks_dict[channel].add(nick)
+			add_nick_to_channel(nick, channel, already_on_channel_acceptable = True)
 
 	elif command == b'JOIN':
 		nick = prefix.partition(b'!')[0]
 		channel, = arguments
 
-		nick = bytes(nick) #Ensure nick is hashable
-		channel = bytes(channel) # Ensure channel is hashable
-
-		with nicks_dict_lock:
-			if channel not in nicks_dict:
-				nicks_dict[channel] = set()
-
-			nicks_dict[channel].add(nick)
+		add_nick_to_channel(nick, channel)
 
 	elif command == b'PART':
 		nick = prefix.partition(b'!')[0]
 		channel, = arguments
 
-		nick = bytes(nick) #Ensure nick is hashable
-		channel = bytes(channel) # Ensure channel is hashable
-
-		with nicks_dict_lock:
-			nicks_dict[channel].remove(nick)
+		remove_nick_from_channel(nick, channel)
 
 	elif command == b'NICK':
 		old_nick = prefix.partition(b'!')[0]
 		new_nick, = arguments
 
-		# Ensure nicks are hashable
-		old_nick = bytes(old_nick)
-		new_nick = bytes(new_nick)
-
-		with nicks_dict_lock:
-			for channel in nicks_dict:
-				if old_nick in nicks_dict[channel]:
-					nicks_dict[channel].remove(old_nick)
-					nicks_dict[channel].add(new_nick)
+		rename_nick(old_nick, new_nick)
 
 	elif command == b'QUIT':
 		nick = prefix.partition(b'!')[0]
 
-		nick = bytes(nick) #Ensure nick is hashable
-
-		with nicks_dict_lock:
-			for channel in nicks_dict:
-				if nick in nicks_dict[channel]:
-					nicks_dict[channel].remove(nick)
+		quit_nick(nick)
 
 	elif command == b'KICK':
 		channel, nick, _ = arguments
 
-		nick = bytes(nick) #Ensure nick is hashable
-		channel = bytes(channel) # Ensure channel is hashable
-
-		with nicks_dict_lock:
-			nicks_dict[channel].remove(nick)
+		remove_nick_from_channel(nick, channel)
